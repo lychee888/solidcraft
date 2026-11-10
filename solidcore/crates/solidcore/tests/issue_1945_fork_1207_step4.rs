@@ -129,7 +129,6 @@ fn sc_fixes(k: &mut Kernel) {
     k.fixes.proto_edge_splits_at_captured_vertices = true;
     k.fixes.boolean_cleanup_removes_slits = true;
     k.fixes.classify_edge_interval = true;
-    k.fixes.seam_point_solutions_are_one = true;
     k.fixes.ellipse_trim_seam_lines_span_cone_height = true;
     k.fixes.degenerate_proto_edge_in_one_vertex = true;
     k.fixes.new_edge_vertex_tolerance_covers_gap = true;
@@ -154,7 +153,6 @@ fn sc_fixes(k: &mut Kernel) {
     k.fixes.analytic_copy_keeps_parameterization = true;
     k.fixes.fillet_tangent_point_one_sided_step = true;
     k.fixes.precise_properties_body_length_scale = true;
-    k.fixes.brep_area_between_solid_and_void = true;
     k.fixes.offset_extension_from_base = true;
     k.fixes.corner_blend_stays_inside_neighbours = true;
     k.fixes.fillet_cleanup_keeps_target_faces = true;
@@ -164,7 +162,6 @@ fn sc_fixes(k: &mut Kernel) {
     k.fixes.fillet_rails_meet_at_one_end_point = true;
     k.fixes.fillet_nx1_tangent_corner_edge = true;
     k.fixes.fillet_3x2_mixed_concave_side_edge = true;
-    k.fixes.offset_closed_curve_trim_arc = true;
     k.fixes.offset_analytic_mate_edges = true;
     k.fixes.shell_edges_on_analytics_exact = true;
     k.fixes.offset_stitch_at_body_tolerance = true;

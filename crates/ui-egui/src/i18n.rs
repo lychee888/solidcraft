@@ -26,6 +26,7 @@ static ITALIAN: Catalog = Catalog::new("it", "Italiano", include_str!(concat!(en
 static JAPANESE: Catalog = Catalog::new("ja", "日本語", include_str!(concat!(env!("OUT_DIR"), "/locales/ja.json")));
 static GEORGIAN: Catalog = Catalog::new("ka", "ქართული", include_str!(concat!(env!("OUT_DIR"), "/locales/ka.json")));
 static KOREAN: Catalog = Catalog::new("ko", "한국어", include_str!(concat!(env!("OUT_DIR"), "/locales/ko.json")));
+static LATVIAN: Catalog = Catalog::new("lv", "Latviešu", include_str!(concat!(env!("OUT_DIR"), "/locales/lv.json")));
 static MALAY: Catalog = Catalog::new("ms", "Bahasa Melayu", include_str!(concat!(env!("OUT_DIR"), "/locales/ms.json")));
 static NORWEGIAN: Catalog = Catalog::new("nb", "Norsk bokmål", include_str!(concat!(env!("OUT_DIR"), "/locales/nb.json")));
 static DUTCH: Catalog = Catalog::new("nl", "Nederlands", include_str!(concat!(env!("OUT_DIR"), "/locales/nl.json")));
@@ -65,6 +66,7 @@ pub const LOCALES: &[&Catalog] = &[
     &JAPANESE,
     &GEORGIAN,
     &KOREAN,
+    &LATVIAN,
     &MALAY,
     &NORWEGIAN,
     &DUTCH,
@@ -81,8 +83,8 @@ pub const LOCALES: &[&Catalog] = &[
     &CHINESE_TRADITIONAL,
 ];
 
-/// Install SolidCraft's catalogs for every lookup: once, at startup, before the first message is
-/// read. Calling it again does nothing.
+/// Install SolidCraft's catalogs for every lookup, and how the kit's tree rows show labels: once,
+/// at startup, before the first message is read. Calling it again does nothing.
 pub fn install() {
     // This crate's own tests read English whatever the PC's language (#10297): the shared crate
     // only sees `cfg!(test)` in its own tests. Pinned before installing, so no test thread reads
@@ -90,6 +92,12 @@ pub fn install() {
     #[cfg(test)]
     solidcraft_ui_text::pin_system_language();
     solidcraft_ui_text::install(LOCALES);
+    crate::ui_kit::install_row_names(row_name);
+}
+
+/// How the kit's tree rows show a label: a given name with [`tr_name`], any other with [`tr_dyn`].
+fn row_name(label: &str, name: bool) -> String {
+    if name { tr_name(label) } else { tr_dyn(label) }
 }
 
 /// The names SolidCraft gives and the engine messages it shows, translated with a [`Locale`].
@@ -1299,6 +1307,7 @@ mod tests {
             ("hr", "Hrvatski", "Postavke", "Ekstrudiraj", "Skica1", "Spremiti promjene u My {design}?"),
             ("sr", "Српски", "Подешавања", "Екструдирај", "Скица1", "Сачувати промене у My {design}?"),
             ("ka", "ქართული", "პარამეტრები", "ამოწევა", "ესკიზი1", "შევინახოთ ცვლილებები My {design}-ში?"),
+            ("lv", "Latviešu", "Iestatījumi", "Izspiešana", "Skice1", "Saglabāt izmaiņas failā My {design}?"),
             ("hu", "Magyar", "Beállítások", "Kihúzás", "Vázlat1", "Menti a(z) My {design} módosításait?"),
             ("id", "Bahasa Indonesia", "Preferensi", "Ekstrusi", "Sketsa1", "Simpan perubahan ke My {design}?"),
             ("nl", "Nederlands", "Voorkeuren", "Extruderen", "Schets1", "Wijzigingen in My {design} opslaan?"),

@@ -106,7 +106,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sketch.edit", "Edit Sketch", crate::checked!("sketch.edit", edit_sketch))
         .noundo().icon("sketch")
         .contract(&EDIT_CONTRACT).output(output_schema_for::<EditResult>)
-        .params("sketch: id or name; restore_marker?: nonnegative timeline position or null (end). When provided, temporarily roll to this sketch and restore that position on Finish or Cancel; Finish groups the edit into one Undo step. Omit to leave the timeline in place"),
+        .params("sketch: id or name; restore_marker?: nonnegative timeline position, null (end) or false. A position or null: temporarily roll to this sketch and restore that position on Finish or Cancel; Finish groups the edit into one Undo step. Omitted: the same with the current position when features come after the sketch, so they rebuild once at Finish rather than after every sketch command. false: leave the timeline in place (later features rebuild after every sketch command)"),
     CommandSpec::new("sketch.finish", "Finish Sketch", crate::checked!("sketch.finish", finish_sketch))
         .at("SKETCH", "FINISH SKETCH").icon("finish").enabled(in_sketch).noundo()
         .contract(&EXIT_CONTRACT).output(output_schema_for::<FinishResult>)
@@ -1190,14 +1190,16 @@ fn sketch_on_plane(s: &mut Session, p: &Value, plane: PlaneRef, internal_body: O
 }
 
 fn edit_sketch(s: &mut Session, p: &Value) -> Result<Value> {
-    let restore_marker = p
+    let requested = p
         .get("restore_marker")
         .map(|v| {
-            serde_json::from_value::<Option<usize>>(v.clone())
-                .map_err(|_| bad("sketch.edit", "`restore_marker` must be a nonnegative timeline position or null"))
+            crate::schema::sketch::EditMarker::read(v)
+                .ok_or_else(|| bad("sketch.edit", "`restore_marker` must be a nonnegative timeline position, null or false"))
         })
         .transpose()?;
-    if restore_marker.flatten().is_some_and(|m| m > s.doc.features.len()) {
+    if let Some(crate::schema::sketch::EditMarker::Restore(Some(m))) = requested
+        && m > s.doc.features.len()
+    {
         return Err(bad("sketch.edit", "`restore_marker` is past the end of the timeline"));
     }
     let key = match p.get("sketch") {
@@ -1221,6 +1223,18 @@ fn edit_sketch(s: &mut Session, p: &Value) -> Result<Value> {
         s.active_occurrence_path = (!path.is_empty()).then_some(path);
     }
     if s.active_sketch != Some(id) || s.sketch_entry.as_ref().is_none_or(|entry| entry.sketch != id) {
+        let restore_marker = match requested {
+            Some(crate::schema::sketch::EditMarker::Restore(marker)) => Some(marker),
+            Some(crate::schema::sketch::EditMarker::InPlace) => None,
+            // Left out: features the timeline evaluates after the sketch would be rebuilt by
+            // every sketch command (their fingerprints chain through it, #14010). Roll to the
+            // sketch for the edit and come back on Finish or Cancel, as the app's Edit Sketch
+            // does, so they are rebuilt once.
+            None => {
+                let end = s.doc.marker.unwrap_or(s.doc.features.len()).min(s.doc.features.len());
+                s.doc.feature_index(id).filter(|&index| index + 1 < end).map(|_| s.doc.marker)
+            }
+        };
         s.sketch_entry = Some(SketchEntry { sketch: id, restore_marker, ..entry_point(s) });
         if restore_marker.is_some()
             && let Some(index) = s.doc.feature_index(id)
@@ -3399,6 +3413,8 @@ fn dimension_result(s: &mut Session, p: &Value) -> Result<DimensionResult> {
         let is_round = |c: usize| matches!(sk.curves.get(c).map(|c| &c.kind), Some(CurveKind::Circle { .. } | CurveKind::Arc { .. }));
         // The other reading of an angle between two lines (see below).
         let mut alt: Option<(ConstraintKind, f64)> = None;
+        // A free line measured to a linked one (an origin axis, a projected edge): (line, link).
+        let mut keep_parallel: Option<(usize, usize)> = None;
         let (mut k, mut cur): (ConstraintKind, f64) = match (e0, e1) {
             ((None, Some(c)), None) if ty == "sweep" => {
                 let angle = arc_len(sk, c).zip(sk.radius(c)).map(|(len, r)| len / r).ok_or_else(|| bad(cmd, "sweep needs an arc"))?;
@@ -3506,13 +3522,28 @@ fn dimension_result(s: &mut Session, p: &Value) -> Result<DimensionResult> {
                 let (da, db) = (a1 - a0, b1 - b0);
                 if da.cross(db).abs() < 1e-9 * da.len() * db.len() && ty != "angle" {
                     // Parallel lines: distance between them (a diameter about a centerline).
-                    let (a, b, b0) = if sk.curves.get(a).is_some_and(|c| c.centerline) { (a, b, b0) } else { (b, a, a0) };
+                    // The reference is a centerline, else an origin or sketch axis in either pick
+                    // order, so the free line is the one kept parallel to it. Other linked lines
+                    // (a projected edge) keep the pick order and get no Parallel.
+                    let linked = |c: usize| sk.curves.get(c).is_some_and(|c| c.link.is_some());
+                    let axis = |c: usize| {
+                        sk.curves.get(c).and_then(|c| c.link.as_deref()).and_then(|l| sk.link(l)).is_some_and(|l| {
+                            matches!(l.source, solidcraft_sketch::LinkSource::Axis { .. } | solidcraft_sketch::LinkSource::SketchAxis { .. })
+                        })
+                    };
+                    // A centerline comes first, then an axis, whichever was picked first.
+                    let centerline = |c: usize| sk.curves.get(c).is_some_and(|c| c.centerline);
+                    let a_ref = centerline(a) || (!centerline(b) && axis(a) && !linked(b));
+                    let (a, b, b0) = if a_ref { (a, b, b0) } else { (b, a, a0) };
                     let (bq, _) = line_ends(sk, b);
                     let (a0, a1) = line_pts(sk, a).unwrap_or_default();
                     let d = (a1 - a0).normalized().map(|d| d.cross(b0 - a0).abs()).unwrap_or(0.0);
                     if diameter_about(sk, a, &ty) {
                         (ConstraintKind::LinearDiameter { p: bq, l: a, value: 2.0 * d }, 2.0 * d)
                     } else {
+                        if axis(a) && !linked(b) {
+                            keep_parallel = Some((b, a));
+                        }
                         (ConstraintKind::PointLineDistance { p: bq, l: a, value: d }, d)
                     }
                 } else {
@@ -3598,6 +3629,7 @@ fn dimension_result(s: &mut Session, p: &Value) -> Result<DimensionResult> {
             // A reference dimension: measures, no parameter.
             let name = k.name();
             let id = sk.add_constraint(k, None)?;
+            new_id = id.clone();
             place_text(sk, &id, text_at);
             if let Some(c) = sk.constraints.iter_mut().find(|c| c.id == id) {
                 c.driven = true;
@@ -3656,11 +3688,18 @@ fn dimension_result(s: &mut Session, p: &Value) -> Result<DimensionResult> {
         let name = k.name();
         let id = sk.add_constraint(k, Some(pname.clone()))?;
         new_id = id.clone();
+        // The distance holds one end of the line; it stays parallel to the linked line so the
+        // whole line keeps that distance, unless something already sets its direction.
+        if let Some((l, r)) = keep_parallel
+            && !direction_fixed(sk, l)
+        {
+            sk.add_constraint(ConstraintKind::Parallel { a: l, b: r }, None)?;
+        }
         place_text(sk, &id, text_at);
         Ok((pname, name, measured(is_angle, cur)))
     })?;
     // Report what the dimension measures once the sketch is solved, not the geometry before.
-    let current = solved_measure(s, p, cmd).unwrap_or(current);
+    let current = solved_measure(s, p, cmd, &new_id).unwrap_or(current);
     if driven {
         return Ok(DimensionResult {
             param: None,
@@ -3726,10 +3765,63 @@ fn measured(is_angle: bool, v: f64) -> (f64, &'static str) {
     if is_angle { (round6(v.to_degrees()), "deg") } else { (round6(v), "mm") }
 }
 
+/// Whether the sketch's constraints already fix line `l`'s direction: a Horizontal, Vertical or
+/// angle on it (or Horizontal/Vertical on its two ends), or a Parallel, Collinear, Perpendicular
+/// or Angle to a line whose direction is fixed or which is linked (an axis, a projected edge).
+/// A relation to free lines only makes them turn together, so it does not count.
+fn direction_fixed(sk: &Sketch, l: usize) -> bool {
+    let absolute = |x: usize| {
+        let ends = match sk.curves.get(x).map(|c| &c.kind) {
+            Some(CurveKind::Line { a, b }) => Some((*a, *b)),
+            _ => None,
+        };
+        sk.constraints.iter().filter(|c| !c.driven).any(|c| match c.kind {
+            ConstraintKind::HorizontalPoints { p, q } | ConstraintKind::VerticalPoints { p, q } => {
+                ends.is_some_and(|(a, b)| (p == a && q == b) || (p == b && q == a))
+            }
+            ConstraintKind::Horizontal { l: y } | ConstraintKind::Vertical { l: y } | ConstraintKind::LineAngle { l: y, .. } => y == x,
+            _ => false,
+        })
+    };
+    let linked = |x: usize| sk.curves.get(x).is_some_and(|c| c.link.is_some());
+    let mut seen = vec![l];
+    let mut next = vec![l];
+    while let Some(x) = next.pop() {
+        if absolute(x) || (x != l && linked(x)) {
+            return true;
+        }
+        for c in sk.constraints.iter().filter(|c| !c.driven) {
+            let other = match c.kind {
+                ConstraintKind::Parallel { a, b }
+                | ConstraintKind::Collinear { a, b }
+                | ConstraintKind::Perpendicular { a, b }
+                | ConstraintKind::Angle { a, b, .. } => {
+                    if a == x {
+                        Some(b)
+                    } else if b == x {
+                        Some(a)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if let Some(o) = other
+                && !seen.contains(&o)
+            {
+                seen.push(o);
+                next.push(o);
+            }
+        }
+    }
+    false
+}
+
 /// What the dimension just added (the sketch's last constraint) measures on the solved sketch.
-fn solved_measure(s: &Session, p: &Value, cmd: &str) -> Option<(f64, &'static str)> {
+/// The dimension is found by its id: a Parallel added after it is not it.
+fn solved_measure(s: &Session, p: &Value, cmd: &str, id: &str) -> Option<(f64, &'static str)> {
     let sk = sketch_store::read(&s.doc, sketch_store::target(s, p, cmd).ok()?).ok()?;
-    let k = &sk.constraints.last()?.kind;
+    let k = &sk.constraints.iter().find(|c| c.id == id)?.kind;
     Some(measured(k.is_angle(), solidcraft_sketch::measure_dimension(sk, k)?))
 }
 

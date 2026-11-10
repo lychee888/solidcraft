@@ -1344,6 +1344,7 @@ fn render_card(app: &mut SolveApp, ui: &mut egui::Ui) {
             editor: false,
             enabled: true,
             header_actions: None,
+            move_command: "view.render_dock",
         },
         &mut side,
         &mut width,
@@ -2595,6 +2596,12 @@ fn pick_from_browser(app: &mut SolveApp, x: Sel) {
             d.pick(&app.session, pick);
         }
         app.dialog = Some(d);
+        return;
+    }
+    if let Sel::Axis { name } = &x
+        && app.dialog.is_none()
+        && crate::tools::pick_axis_from_browser(app, name)
+    {
         return;
     }
     let hit = match &x {
